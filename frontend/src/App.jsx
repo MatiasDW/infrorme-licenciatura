@@ -456,12 +456,16 @@ export default function App() {
 
       <aside className={`chat-shell ${chatOpen ? "open" : "closed"}`}>
         <button className="chat-toggle" onClick={() => setChatOpen((open) => !open)} type="button">
-          <span className="chat-spark">✦</span>{chatOpen ? "Ocultar asistente" : "Consultar reporte"}
+          <span className="assistant-avatar" role="img" aria-label="Logo de la Municipalidad de Pudahuel" />
+          {chatOpen ? "Ocultar asistente" : "Chat"}
         </button>
         {chatOpen && (
           <div className="chat-panel">
             <div className="chat-header">
-              <div><span className="section-label">Asistente documental</span><h3>{currentVideo?.title || "Sin reporte activo"}</h3></div>
+              <div className="chat-identity">
+                <span className="assistant-avatar assistant-avatar-large" role="img" aria-label="Logo de la Municipalidad de Pudahuel" />
+                <div><span className="section-label">Asistente documental</span><h3>{currentVideo?.title || "Sin reporte activo"}</h3></div>
+              </div>
               <span className="assistant-badge">AI</span>
             </div>
             <div className="chat-messages">
