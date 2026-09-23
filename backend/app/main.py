@@ -14,6 +14,7 @@ from app.database import Base, engine, get_db
 from app.models import YouTubeVideo
 from app.schemas import (
     ChannelScrapeRequest,
+    ChannelScrapeAllRequest,
     ChannelScrapeResponse,
     ChannelScrapeVideoResult,
     ChatRequest,
@@ -24,7 +25,7 @@ from app.schemas import (
     VideoDetail,
     VideoSummary,
 )
-from app.youtube import build_video_payload, discover_channel_matches
+from app.youtube import build_channel_video_payload, build_video_payload, discover_channel_matches
 
 
 app = FastAPI(title="YouTube Transcript Console", version="1.0.0")
@@ -145,10 +146,17 @@ def create_transcript(payload: CreateTranscriptRequest, db: Session = Depends(ge
     return to_detail(video)
 
 
-@app.post("/api/channels/scrape", response_model=ChannelScrapeResponse)
-def scrape_channel(payload: ChannelScrapeRequest, db: Session = Depends(get_db)) -> ChannelScrapeResponse:
+def process_channel_scrape(
+    payload: ChannelScrapeRequest | ChannelScrapeAllRequest,
+    db: Session,
+) -> ChannelScrapeResponse:
     try:
-        matches = discover_channel_matches(str(payload.url), payload.title_query, payload.max_videos)
+        matches = discover_channel_matches(
+            str(payload.url),
+            payload.title_query,
+            payload.max_videos,
+            all_content=payload.all_content,
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -161,7 +169,11 @@ def scrape_channel(payload: ChannelScrapeRequest, db: Session = Depends(get_db))
 
     for item in matches:
         try:
-            video = persist_video(db, build_video_payload(item["url"]))
+            existing = db.get(YouTubeVideo, item["video_id"])
+            if existing and existing.transcript_text and not payload.refresh_existing:
+                video = existing
+            else:
+                video = persist_video(db, build_channel_video_payload(item))
             saved_count += 1
         except Exception as exc:
             failed_count += 1
@@ -212,6 +224,19 @@ def scrape_channel(payload: ChannelScrapeRequest, db: Session = Depends(get_db))
         first_valid_video_id=first_valid_video_id,
         videos=results,
     )
+
+
+@app.post("/api/channels/scrape", response_model=ChannelScrapeResponse)
+def scrape_channel(payload: ChannelScrapeRequest, db: Session = Depends(get_db)) -> ChannelScrapeResponse:
+    return process_channel_scrape(payload, db)
+
+
+@app.post("/api/channels/scrape-all", response_model=ChannelScrapeResponse)
+def scrape_all_channel(
+    payload: ChannelScrapeAllRequest,
+    db: Session = Depends(get_db),
+) -> ChannelScrapeResponse:
+    return process_channel_scrape(payload, db)
 
 
 @app.post("/api/v1/chat/message", response_model=ChatResponse)

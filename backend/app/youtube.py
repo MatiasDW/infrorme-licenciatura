@@ -24,6 +24,8 @@ from app.utils import (
 PREFERRED_TRANSCRIPT_LANGUAGES = ["es", "es-419", "en", "en-US"]
 INITIAL_DATA_RE = re.compile(r"var ytInitialData = (\{.*?\});")
 PLAYER_RESPONSE_RE = re.compile(r"var ytInitialPlayerResponse = (\{.*?\});")
+INNERTUBE_API_KEY_RE = re.compile(r'INNERTUBE_API_KEY":"([^"]+)')
+INNERTUBE_CLIENT_VERSION_RE = re.compile(r'INNERTUBE_CLIENT_VERSION":"([^"]+)')
 
 
 def _youtube_dl(options: Optional[dict[str, Any]] = None) -> YoutubeDL:
@@ -49,7 +51,108 @@ def _extract_text(value: Any) -> Optional[str]:
     return None
 
 
-def _discover_channel_tab_via_html(tab_url: str, tab: str) -> list[dict[str, Any]]:
+def _channel_video_entries(node: Any, tab: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if value.get("contentType") == "LOCKUP_CONTENT_TYPE_VIDEO" and value.get("contentId"):
+                video_id = value["contentId"]
+                entries.append(
+                    {
+                        "video_id": video_id,
+                        "title": (
+                            ((value.get("rendererContext") or {}).get("accessibilityContext") or {}).get("label")
+                            or video_id
+                        ),
+                        "url": build_video_url(video_id),
+                        "source_tab": tab,
+                        "timestamp": None,
+                    }
+                )
+            elif value.get("videoId"):
+                video_id = value["videoId"]
+                title = _extract_text(value.get("title")) or _extract_text(value.get("headline"))
+                if not title:
+                    title = ((value.get("accessibility") or {}).get("accessibilityData") or {}).get("label")
+                entries.append(
+                    {
+                        "video_id": video_id,
+                        "title": title or video_id,
+                        "url": build_video_url(video_id),
+                        "source_tab": tab,
+                        "timestamp": None,
+                    }
+                )
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(node)
+    return entries
+
+
+def _channel_continuation_tokens(node: Any) -> list[str]:
+    tokens: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            command = value.get("continuationCommand")
+            if isinstance(command, dict) and command.get("token"):
+                tokens.append(command["token"])
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(node)
+    return list(dict.fromkeys(tokens))
+
+
+def _dedupe_channel_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in entries:
+        video_id = item.get("video_id")
+        if not video_id or video_id in seen:
+            continue
+        seen.add(video_id)
+        deduped.append(item)
+    return deduped
+
+
+def _fetch_channel_continuation(api_key: str, client_version: str, token: str) -> dict[str, Any]:
+    payload = {
+        "context": {
+            "client": {
+                "clientName": "WEB",
+                "clientVersion": client_version,
+            }
+        },
+        "continuation": token,
+    }
+    request = Request(
+        f"https://www.youtube.com/youtubei/v1/browse?key={api_key}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0 Safari/537.36"
+            ),
+        },
+    )
+    return json.loads(urlopen(request, timeout=30).read().decode("utf-8", errors="ignore"))
+
+
+def _discover_channel_tab_via_html(
+    tab_url: str,
+    tab: str,
+    max_items: int = 1000,
+) -> list[dict[str, Any]]:
     request = Request(
         tab_url,
         headers={
@@ -65,54 +168,36 @@ def _discover_channel_tab_via_html(tab_url: str, tab: str) -> list[dict[str, Any
         return []
 
     data = json.loads(match.group(1))
-    discovered: list[dict[str, Any]] = []
+    discovered = _dedupe_channel_entries(_channel_video_entries(data, tab))
+    api_key_match = INNERTUBE_API_KEY_RE.search(html)
+    client_version_match = INNERTUBE_CLIENT_VERSION_RE.search(html)
+    tokens = _channel_continuation_tokens(data)
 
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            if node.get("contentType") == "LOCKUP_CONTENT_TYPE_VIDEO" and node.get("contentId"):
-                discovered.append(
-                    {
-                        "video_id": node["contentId"],
-                        "title": (
-                            ((node.get("rendererContext") or {}).get("accessibilityContext") or {}).get("label")
-                            or node["contentId"]
-                        ),
-                        "url": build_video_url(node["contentId"]),
-                        "source_tab": tab,
-                        "timestamp": None,
-                    }
-                )
-            elif node.get("videoId"):
-                title = _extract_text(node.get("title")) or _extract_text(node.get("headline"))
-                if not title:
-                    title = ((node.get("accessibility") or {}).get("accessibilityData") or {}).get("label")
-                discovered.append(
-                    {
-                        "video_id": node["videoId"],
-                        "title": title or node["videoId"],
-                        "url": build_video_url(node["videoId"]),
-                        "source_tab": tab,
-                        "timestamp": None,
-                    }
-                )
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
+    if not api_key_match or not client_version_match:
+        return discovered[:max_items]
 
-    walk(data)
+    api_key = api_key_match.group(1)
+    client_version = client_version_match.group(1)
+    visited_tokens: set[str] = set()
+    pages = 0
 
-    deduped: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for item in discovered:
-        video_id = item["video_id"]
-        if video_id in seen:
+    while tokens and len(discovered) < max_items and pages < 200:
+        token = tokens.pop(0)
+        if token in visited_tokens:
             continue
-        seen.add(video_id)
-        deduped.append(item)
+        visited_tokens.add(token)
+        try:
+            continuation = _fetch_channel_continuation(api_key, client_version, token)
+        except Exception:
+            break
 
-    return deduped
+        discovered = _dedupe_channel_entries(discovered + _channel_video_entries(continuation, tab))
+        for continuation_token in _channel_continuation_tokens(continuation):
+            if continuation_token not in visited_tokens:
+                tokens.append(continuation_token)
+        pages += 1
+
+    return discovered[:max_items]
 
 
 def fetch_video_metadata(url_or_id: str) -> dict[str, Any]:
@@ -276,9 +361,62 @@ def build_video_payload(url_or_id: str) -> dict[str, Any]:
     return payload
 
 
-def discover_channel_matches(channel_url: str, title_query: str, max_videos: int) -> list[dict[str, Any]]:
-    normalized_query = normalize_text(title_query)
-    search_depth = min(max(max_videos * 6, 50), 200)
+def build_channel_video_payload(item: dict[str, Any]) -> dict[str, Any]:
+    """Build a persistable record without a second YouTube metadata scrape.
+
+    Channel discovery already provides the stable video id and title. Reusing those
+    values is important for bulk imports because fetching every watch page triggers
+    YouTube rate limits before transcript fetching can finish.
+    """
+    video_id = item["video_id"]
+    payload = {
+        "video_id": video_id,
+        "url": item.get("url") or build_video_url(video_id),
+        "title": item.get("title") or video_id,
+        "channel_id": None,
+        "channel_name": None,
+        "duration_seconds": None,
+        "publish_date": None,
+        "upload_date": None,
+        "description": None,
+        "description_has_transcript_hint": False,
+        "raw_payload": {
+            "discovery_source": "youtube-channel",
+            "source_tab": item.get("source_tab"),
+        },
+    }
+
+    try:
+        payload.update(fetch_transcript_payload(video_id))
+    except Exception as exc:
+        payload.update(
+            {
+                "transcript_source": "youtube-transcript-api",
+                "transcript_language": None,
+                "transcript_language_code": None,
+                "transcript_is_generated": None,
+                "transcript_is_translatable": None,
+                "transcript_segments": [],
+                "transcript_text": None,
+                "transcript_error": str(exc),
+            }
+        )
+
+    return payload
+
+
+def discover_channel_matches(
+    channel_url: str,
+    title_query: str = "",
+    max_videos: int = 1000,
+    all_content: bool = False,
+) -> list[dict[str, Any]]:
+    normalized_queries = [
+        normalize_text(term)
+        for term in re.split(r"[|,]", title_query or "")
+        if normalize_text(term)
+    ]
+    search_depth = min(max(max_videos * 2, 50), 5000)
     discovered: dict[str, dict[str, Any]] = {}
     successful_tabs = 0
 
@@ -298,7 +436,7 @@ def discover_channel_matches(channel_url: str, title_query: str, max_videos: int
             tab_entries = []
 
         if not tab_entries:
-            tab_entries = _discover_channel_tab_via_html(tab_url, tab)
+            tab_entries = _discover_channel_tab_via_html(tab_url, tab, max_items=search_depth)
 
         if not tab_entries:
             continue
@@ -310,7 +448,10 @@ def discover_channel_matches(channel_url: str, title_query: str, max_videos: int
             title = entry.get("title") or ""
             if not video_id or video_id in discovered:
                 continue
-            if normalized_query and normalized_query not in normalize_text(title):
+            normalized_title = normalize_text(title)
+            if not all_content and normalized_queries and not any(
+                query in normalized_title for query in normalized_queries
+            ):
                 continue
             discovered[video_id] = {
                 "video_id": video_id,
@@ -323,12 +464,30 @@ def discover_channel_matches(channel_url: str, title_query: str, max_videos: int
     if successful_tabs == 0:
         raise RuntimeError("Could not inspect channel videos or streams")
 
-    ordered = sorted(
-        discovered.values(),
-        key=lambda item: item.get("timestamp") or 0,
-        reverse=True,
-    )
-    return ordered[:max_videos]
+    ordered_by_tab = {
+        tab: sorted(
+            (item for item in discovered.values() if item.get("source_tab") == tab),
+            key=lambda item: item.get("timestamp") or 0,
+            reverse=True,
+        )
+        for tab in ("streams", "videos")
+    }
+    balanced: list[dict[str, Any]] = []
+    index = 0
+    while len(balanced) < max_videos:
+        added = False
+        for tab in ("streams", "videos"):
+            entries = ordered_by_tab[tab]
+            if index < len(entries):
+                balanced.append(entries[index])
+                added = True
+                if len(balanced) >= max_videos:
+                    break
+        if not added:
+            break
+        index += 1
+
+    return balanced
 
 
 def search_transcript_segments(segments: Iterable[dict[str, Any]], query: str, max_results: int = 6) -> list[dict[str, Any]]:

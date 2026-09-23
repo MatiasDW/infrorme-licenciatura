@@ -48,8 +48,18 @@ class CreateTranscriptRequest(BaseModel):
 
 class ChannelScrapeRequest(BaseModel):
     url: HttpUrl
-    title_query: str = Field(min_length=1)
-    max_videos: int = Field(default=20, ge=1, le=100)
+    title_query: str = ""
+    max_videos: int = Field(default=20, ge=1, le=5000)
+    all_content: bool = False
+    refresh_existing: bool = False
+
+
+class ChannelScrapeAllRequest(BaseModel):
+    url: HttpUrl
+    title_query: str = "concejo|sesion|reunion|comision"
+    max_videos: int = Field(default=1000, ge=1, le=5000)
+    all_content: bool = False
+    refresh_existing: bool = False
 
 
 class ChannelScrapeVideoResult(BaseModel):
@@ -92,4 +102,3 @@ class ChatResponse(BaseModel):
     answer: str
     used_tools: bool
     model: str
-

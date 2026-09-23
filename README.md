@@ -6,7 +6,7 @@ Plataforma web para transcripción y consulta de videos públicos de YouTube con
 - Frontend en `React + Vite`
 - Persistencia en `PostgreSQL`
 - Chat LLM sobre transcript vía `OpenRouter`
-- Procesamiento de video individual y scrapeo de canal por filtro
+- Procesamiento de video individual y scrapeo masivo de canal
 
 ## Stack
 
@@ -59,6 +59,7 @@ docker compose up --build -d
 - `GET /api/transcripts/{video_id}`
 - `POST /api/transcripts`
 - `POST /api/channels/scrape`
+- `POST /api/channels/scrape-all`
 - `POST /api/v1/chat/message`
 
 ## Payloads
@@ -81,6 +82,28 @@ Canal:
 }
 ```
 
+Scrapeo masivo de sesiones y comisiones de Pudahuel:
+
+```json
+{
+  "url": "https://www.youtube.com/channel/UCJTRTxPkNZtnhyDpyPeVggQ",
+  "title_query": "concejo|sesion|reunion|comision",
+  "max_videos": 1000,
+  "refresh_existing": false
+}
+```
+
+Para procesar literalmente todo el contenido del canal, incluyendo videos que no sean del
+Concejo Municipal:
+
+```json
+{
+  "url": "https://www.youtube.com/channel/UCJTRTxPkNZtnhyDpyPeVggQ",
+  "all_content": true,
+  "max_videos": 5000
+}
+```
+
 Chat:
 
 ```json
@@ -99,8 +122,11 @@ Chat:
 ## Comportamiento implementado
 
 - El scrapeo de canal combina `videos` y `streams`
-- El filtro por título es accent-insensitive
+- El scrapeo masivo pagina las respuestas públicas de YouTube hasta alcanzar el límite
+- El filtro por título es accent-insensitive y acepta términos alternativos separados por `|` o `,`
 - La deduplicación se hace por `video_id`
+- Cada resultado se persiste inmediatamente en PostgreSQL, incluyendo los videos sin transcript
+- Los videos que ya tienen transcript válido se reutilizan; usa `refresh_existing: true` para forzar su actualización
 - El historial principal excluye videos sin transcript real
 - Si el scrapeo del canal encuentra transcripts válidos, el frontend carga automáticamente el primero
 - El chat envía `video_id`, `message` y `history` al backend

@@ -3,9 +3,10 @@ import { useEffect, useState } from "react";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 const initialChannelForm = {
-  url: "https://www.youtube.com/@IMunicipalidadLoBarnechea",
-  title_query: "sesion ordinaria",
-  max_videos: 20,
+  url: "https://www.youtube.com/channel/UCJTRTxPkNZtnhyDpyPeVggQ",
+  title_query: "concejo|sesion|reunion|comision",
+  max_videos: 1000,
+  all_content: false,
 };
 
 function formatDate(value) {
@@ -124,7 +125,10 @@ export default function App() {
     setLoadingChannel(true);
     setPageError("");
     try {
-      const result = await request("/api/channels/scrape", {
+      const endpoint = channelForm.all_content
+        ? "/api/channels/scrape-all"
+        : "/api/channels/scrape";
+      const result = await request(endpoint, {
         method: "POST",
         body: JSON.stringify({
           ...channelForm,
@@ -268,21 +272,35 @@ export default function App() {
               />
             </label>
             <label>
-              Filtro por título
-              <input
-                value={channelForm.title_query}
-                onChange={(event) =>
-                  setChannelForm((state) => ({ ...state, title_query: event.target.value }))
-                }
-                required
-                type="text"
-              />
-            </label>
-            <label>
-              Máximo de videos
-              <input
-                min="1"
-                max="100"
+              Filtro por título (separa términos con `|`)
+                <input
+                  value={channelForm.title_query}
+                  onChange={(event) =>
+                    setChannelForm((state) => ({ ...state, title_query: event.target.value }))
+                  }
+                  type="text"
+                />
+              </label>
+              <label className="checkbox-label">
+                <input
+                  checked={channelForm.all_content}
+                  onChange={(event) =>
+                    setChannelForm((state) => ({
+                      ...state,
+                      all_content: event.target.checked,
+                      title_query: event.target.checked ? "" : state.title_query,
+                      max_videos: event.target.checked ? 5000 : state.max_videos,
+                    }))
+                  }
+                  type="checkbox"
+                />
+                <span>Incluir todo el contenido del canal, aunque no mencione al concejo</span>
+              </label>
+              <label>
+                Máximo de videos
+                <input
+                  min="1"
+                  max="5000"
                 value={channelForm.max_videos}
                 onChange={(event) =>
                   setChannelForm((state) => ({ ...state, max_videos: event.target.value }))
@@ -292,8 +310,12 @@ export default function App() {
               />
             </label>
             <button className="primary-button" disabled={loadingChannel} type="submit">
-              {loadingChannel ? "Scrapeando..." : "Procesar canal"}
+              {loadingChannel ? "Scrapeando y guardando..." : "Scrapear y guardar"}
             </button>
+            <p className="form-hint">
+              La carga masiva puede tardar varios minutos porque obtiene el transcript de cada
+              video y guarda también los que no tengan transcript.
+            </p>
           </form>
         </section>
 
