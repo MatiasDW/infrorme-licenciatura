@@ -156,9 +156,11 @@ def enqueue_transcript_jobs(
         if job is None:
             db.add(TranscriptJob(video_id=video.video_id, status="queued", available_at=now, updated_at=now))
             queued += 1
-        elif retry_blocked and job.status == "blocked":
+        elif retry_blocked and job.status in {"blocked", "queued"}:
+            was_blocked = job.status == "blocked"
             job.status = "queued"
-            job.attempts = 0
+            if was_blocked:
+                job.attempts = 0
             job.available_at = now
             job.locked_at = None
             job.last_error = None
