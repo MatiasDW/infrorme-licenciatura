@@ -252,40 +252,58 @@ def _fetch_video_metadata_via_html(video_url: str) -> dict[str, Any]:
 
 
 def fetch_transcript_payload(video_id: str) -> dict[str, Any]:
-    api = YouTubeTranscriptApi()
-    if hasattr(api, "list"):
-        transcript_list = api.list(video_id)
-    elif hasattr(api, "list_transcripts"):
-        transcript_list = api.list_transcripts(video_id)
-    elif hasattr(YouTubeTranscriptApi, "list_transcripts"):
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-    else:
-        raise RuntimeError("Installed youtube-transcript-api version does not support transcript listing")
-
-    transcript = None
     try:
-        transcript = transcript_list.find_manually_created_transcript(PREFERRED_TRANSCRIPT_LANGUAGES)
-    except Exception:
-        pass
+        api = YouTubeTranscriptApi()
+        if hasattr(api, "list"):
+            transcript_list = api.list(video_id)
+        elif hasattr(api, "list_transcripts"):
+            transcript_list = api.list_transcripts(video_id)
+        elif hasattr(YouTubeTranscriptApi, "list_transcripts"):
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        else:
+            raise RuntimeError("Installed youtube-transcript-api version does not support transcript listing")
 
-    if transcript is None:
+        transcript = None
         try:
-            transcript = transcript_list.find_transcript(PREFERRED_TRANSCRIPT_LANGUAGES)
+            transcript = transcript_list.find_manually_created_transcript(PREFERRED_TRANSCRIPT_LANGUAGES)
         except Exception:
             pass
 
-    if transcript is None:
-        for candidate in transcript_list:
-            transcript = candidate
-            break
+        if transcript is None:
+            try:
+                transcript = transcript_list.find_transcript(PREFERRED_TRANSCRIPT_LANGUAGES)
+            except Exception:
+                pass
 
-    if transcript is None:
-        raise RuntimeError("No transcript candidates were found for this video")
+        if transcript is None:
+            for candidate in transcript_list:
+                transcript = candidate
+                break
 
-    fetched = transcript.fetch()
-    raw_segments = fetched.to_raw_data() if hasattr(fetched, "to_raw_data") else list(fetched)
+        if transcript is None:
+            raise RuntimeError("No transcript candidates were found for this video")
 
-    cleaned_segments = [
+        fetched = transcript.fetch()
+        raw_segments = fetched.to_raw_data() if hasattr(fetched, "to_raw_data") else list(fetched)
+        cleaned_segments = _clean_transcript_segments(raw_segments)
+
+        return _transcript_payload(
+            cleaned_segments,
+            source="youtube-transcript-api",
+            language=getattr(transcript, "language", None),
+            language_code=getattr(transcript, "language_code", None),
+            is_generated=getattr(transcript, "is_generated", None),
+            is_translatable=getattr(transcript, "is_translatable", None),
+        )
+    except Exception as api_error:
+        try:
+            return _fetch_transcript_payload_via_ytdlp(video_id)
+        except Exception as fallback_error:
+            raise RuntimeError(f"{api_error}; yt-dlp fallback: {fallback_error}") from fallback_error
+
+
+def _clean_transcript_segments(raw_segments: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
         {
             "text": (segment.get("text") or "").strip(),
             "start": float(segment.get("start", 0.0)),
@@ -295,18 +313,88 @@ def fetch_transcript_payload(video_id: str) -> dict[str, Any]:
         if (segment.get("text") or "").strip()
     ]
 
-    transcript_text = " ".join(segment["text"] for segment in cleaned_segments)
 
+def _transcript_payload(
+    segments: list[dict[str, Any]],
+    *,
+    source: str,
+    language: str | None,
+    language_code: str | None,
+    is_generated: bool | None,
+    is_translatable: bool | None,
+) -> dict[str, Any]:
     return {
-        "transcript_source": "youtube-transcript-api",
-        "transcript_language": getattr(transcript, "language", None),
-        "transcript_language_code": getattr(transcript, "language_code", None),
-        "transcript_is_generated": getattr(transcript, "is_generated", None),
-        "transcript_is_translatable": getattr(transcript, "is_translatable", None),
-        "transcript_segments": cleaned_segments,
-        "transcript_text": transcript_text,
+        "transcript_source": source,
+        "transcript_language": language,
+        "transcript_language_code": language_code,
+        "transcript_is_generated": is_generated,
+        "transcript_is_translatable": is_translatable,
+        "transcript_segments": segments,
+        "transcript_text": " ".join(segment["text"] for segment in segments),
         "transcript_error": None,
     }
+
+
+def _fetch_transcript_payload_via_ytdlp(video_id: str) -> dict[str, Any]:
+    """Use an alternate YouTube player client when transcript API requests are blocked."""
+    options = {
+        "extractor_args": {"youtube": {"player_client": ["android"]}},
+    }
+    with _youtube_dl(options) as ydl:
+        info = ydl.extract_info(build_video_url(video_id), download=False)
+
+        subtitle_map = info.get("subtitles") or {}
+        automatic_map = info.get("automatic_captions") or {}
+        selected_map = {}
+        selected_key = None
+        is_generated = False
+        for candidate_map, candidate_generated in ((subtitle_map, False), (automatic_map, True)):
+            for language in PREFERRED_TRANSCRIPT_LANGUAGES:
+                selected_key = next(
+                    (
+                        key
+                        for key in candidate_map
+                        if key == language or key.startswith(f"{language}-")
+                    ),
+                    None,
+                )
+                if selected_key:
+                    selected_map = candidate_map
+                    is_generated = candidate_generated
+                    break
+            if selected_key:
+                break
+
+        if not selected_key:
+            selected_map = subtitle_map or automatic_map
+            selected_key = next(iter(selected_map), None)
+            is_generated = not bool(subtitle_map)
+        if not selected_key:
+            raise RuntimeError("No subtitle candidates were found")
+
+        formats = selected_map[selected_key]
+        subtitle_format = next((item for item in formats if item.get("ext") == "json3"), formats[0])
+        subtitle_data = json.loads(ydl.urlopen(subtitle_format["url"]).read().decode("utf-8"))
+        raw_segments = []
+        for event in subtitle_data.get("events", []):
+            text = "".join(segment.get("utf8", "") for segment in event.get("segs") or []).strip()
+            if text:
+                raw_segments.append(
+                    {
+                        "text": text,
+                        "start": float(event.get("tStartMs", 0)) / 1000,
+                        "duration": float(event.get("dDurationMs", 0)) / 1000,
+                    }
+                )
+
+    return _transcript_payload(
+        _clean_transcript_segments(raw_segments),
+        source="yt-dlp-subtitles",
+        language=selected_key,
+        language_code=selected_key,
+        is_generated=is_generated,
+        is_translatable=True,
+    )
 
 
 def build_video_payload(url_or_id: str) -> dict[str, Any]:

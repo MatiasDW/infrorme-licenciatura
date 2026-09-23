@@ -164,6 +164,41 @@ npm install
 npm run dev -- --host 0.0.0.0 --port 5174
 ```
 
+## Inspeccionar la base desde Docker
+
+```bash
+docker ps
+docker start florence-pudahuel-db florence-pudahuel-api
+docker exec -it florence-pudahuel-db psql -U postgres -d youtube_transcripts
+```
+
+Dentro de `psql`:
+
+```sql
+\dt public.*
+\dt warehouse.*
+SELECT COUNT(*) AS videos,
+       COUNT(*) FILTER (WHERE transcript_text IS NOT NULL AND length(transcript_text) > 0) AS con_transcript,
+       COUNT(*) FILTER (WHERE transcript_text IS NULL OR length(transcript_text) = 0) AS pendientes
+FROM public.youtube_videos;
+SELECT video_id, title, publish_date, transcript_error
+FROM public.youtube_videos
+WHERE transcript_text IS NULL OR length(transcript_text) = 0
+ORDER BY publish_date DESC NULLS LAST;
+SELECT COUNT(*) FROM warehouse.fact_transcript_segments;
+SELECT COUNT(*) FROM warehouse.fact_transcript_chunks;
+\q
+```
+
+Para exportar el catálogo y los transcripts a archivos locales:
+
+```bash
+docker exec florence-pudahuel-db psql -U postgres -d youtube_transcripts -At -F $'\t' -c \
+  'SELECT video_id, publish_date, title, transcript_text FROM public.youtube_videos ORDER BY publish_date DESC NULLS LAST' \
+  > pudahuel-transcripts.tsv
+docker exec florence-pudahuel-db pg_dump -U postgres -d youtube_transcripts > pudahuel-backup.sql
+```
+
 ## Build frontend
 
 ```bash
@@ -177,4 +212,5 @@ npm run build
 - No se usa Selenium
 - `yt-dlp` se usa para descubrimiento de videos del canal
 - `youtube-transcript-api` se usa para obtener transcripts
+- Si esa API recibe un bloqueo de YouTube, el backend intenta recuperar subtítulos con `yt-dlp` usando el cliente Android
 - Se guardan también videos sin transcript, pero quedan fuera del historial principal
