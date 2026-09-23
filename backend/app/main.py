@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.chat import answer_chat
 from app.config import settings
 from app.database import Base, SessionLocal, engine, get_db
-from app.models import YouTubeVideo
+from app.models import TranscriptJob, YouTubeVideo
 from app.schemas import (
     ChannelScrapeRequest,
     ChannelScrapeAllRequest,
@@ -21,6 +21,7 @@ from app.schemas import (
     ChatResponse,
     CreateTranscriptRequest,
     TranscriptLibraryResponse,
+    TranscriptQueueRequest,
     TranscriptSegment,
     VideoDetail,
     VideoSummary,
@@ -133,6 +134,72 @@ def list_transcripts(db: Session = Depends(get_db)) -> TranscriptLibraryResponse
         items=[to_summary(video) for video in items],
         total=db.scalar(select(func.count(YouTubeVideo.video_id)).where(valid_filter)) or 0,
     )
+
+
+def enqueue_transcript_jobs(
+    db: Session,
+    video_ids: list[str] | None = None,
+    limit: int = 1000,
+    retry_blocked: bool = False,
+) -> dict[str, int]:
+    missing_filter = func.length(func.coalesce(YouTubeVideo.transcript_text, "")) == 0
+    statement = select(YouTubeVideo).where(missing_filter).order_by(YouTubeVideo.scraped_at).limit(limit)
+    if video_ids:
+        statement = statement.where(YouTubeVideo.video_id.in_(video_ids))
+
+    queued = 0
+    reset = 0
+    skipped = 0
+    now = datetime.now(timezone.utc)
+    for video in db.scalars(statement).all():
+        job = db.scalar(select(TranscriptJob).where(TranscriptJob.video_id == video.video_id))
+        if job is None:
+            db.add(TranscriptJob(video_id=video.video_id, status="queued", available_at=now, updated_at=now))
+            queued += 1
+        elif retry_blocked and job.status == "blocked":
+            job.status = "queued"
+            job.attempts = 0
+            job.available_at = now
+            job.locked_at = None
+            job.last_error = None
+            job.updated_at = now
+            reset += 1
+        else:
+            skipped += 1
+    db.commit()
+    return {"queued": queued, "reset": reset, "skipped": skipped}
+
+
+@app.post("/api/transcripts/queue")
+def queue_transcripts(
+    payload: TranscriptQueueRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    """Queue transcript work without downloading inside the HTTP request."""
+    return enqueue_transcript_jobs(
+        db,
+        video_ids=payload.video_ids,
+        limit=payload.limit,
+        retry_blocked=payload.retry_blocked,
+    )
+
+
+@app.get("/api/transcripts/queue")
+def transcript_queue_status(db: Session = Depends(get_db)) -> dict:
+    rows = db.execute(
+        select(TranscriptJob.status, func.count(TranscriptJob.id)).group_by(TranscriptJob.status)
+    ).all()
+    next_job = db.scalar(
+        select(TranscriptJob)
+        .where(TranscriptJob.status == "queued")
+        .order_by(TranscriptJob.available_at)
+    )
+    return {
+        "counts": {status: count for status, count in rows},
+        "next_available_at": next_job.available_at.isoformat() if next_job else None,
+        "rate_limit_seconds": settings.youtube_min_request_interval_seconds,
+        "block_cooldown_seconds": settings.youtube_block_cooldown_seconds,
+    }
 
 
 @app.get("/api/reports", response_model=TranscriptLibraryResponse)

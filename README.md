@@ -61,9 +61,11 @@ docker compose up --build -d
 
 - `GET /api/health`
 - `GET /api/transcripts`
+- `GET /api/transcripts/queue`
 - `GET /api/reports?q=&date_from=&date_to=`
 - `GET /api/transcripts/{video_id}`
 - `POST /api/transcripts`
+- `POST /api/transcripts/queue`
 - `POST /api/channels/scrape`
 - `POST /api/channels/scrape-all`
 - `POST /api/v1/chat/message`
@@ -136,6 +138,8 @@ transcript y permite filtrar por tema, título, canal y rango de fechas.
 - El filtro por título es accent-insensitive y acepta términos alternativos separados por `|` o `,`
 - La deduplicación se hace por `video_id`
 - Cada resultado se persiste inmediatamente en PostgreSQL, incluyendo los videos sin transcript
+- La descarga de transcripts puede encolarse y procesarse con un worker separado, con una solicitud a la vez
+- El worker espera 15 segundos entre videos, aplica backoff y pausa la cola al detectar un `429`
 - Los videos que ya tienen transcript válido se reutilizan; usa `refresh_existing: true` para forzar su actualización
 - El warehouse separa segmentos y chunks derivados en tablas particionadas por `video_id`
 - El chat global consulta el warehouse completo y el chat de sesión puede acotar la búsqueda a un video
@@ -202,6 +206,43 @@ docker exec florence-pudahuel-db psql -U postgres -d youtube_transcripts -At -F 
   > pudahuel-transcripts.tsv
 docker exec florence-pudahuel-db pg_dump -U postgres -d youtube_transcripts > pudahuel-backup.sql
 ```
+
+Para encolar todos los videos sin transcript sin iniciar la descarga dentro de la petición HTTP:
+
+```bash
+curl -X POST http://localhost:18000/api/transcripts/queue \
+  -H 'Content-Type: application/json' \
+  -d '{"limit":5000,"retry_blocked":false}'
+
+curl http://localhost:18000/api/transcripts/queue
+```
+
+El worker se levanta con `docker compose up -d worker`. No se debe iniciar antes de validar que la
+IP pueda descargar un transcript; si detecta `429`, marca el trabajo como `blocked`, difiere el
+resto por el cooldown configurado y se detiene.
+
+El CAPTCHA no se pega en el backend ni en `.env`. Se resuelve manualmente en un navegador desde la
+misma red/IP que hará la descarga. Si se autoriza el uso de cookies, exporta un archivo Netscape
+de una cuenta dedicada, guárdalo fuera de Git y móntalo solo como lectura:
+
+```bash
+mkdir -p secrets
+# Exportar desde el navegador a secrets/youtube-cookies.txt
+
+docker run --rm --name youtube-cookie-check \
+  --network florence_default \
+  --env-file .env \
+  -e YOUTUBE_COOKIES_FILE=/run/secrets/youtube-cookies.txt \
+  -v "$PWD/secrets/youtube-cookies.txt:/run/secrets/youtube-cookies.txt:ro" \
+  florence-worker \
+  yt-dlp --cookies /run/secrets/youtube-cookies.txt --skip-download \
+  --list-subs --extractor-args "youtube:player_client=android" \
+  https://www.youtube.com/watch?v=vlf_0-7DRFQ
+```
+
+Las cookies pueden provocar el bloqueo de la cuenta; no uses una cuenta personal. Para el worker
+permanente hay que montar el mismo archivo como solo lectura y definir `YOUTUBE_COOKIES_FILE` en el
+servicio `worker`.
 
 ## Build frontend
 

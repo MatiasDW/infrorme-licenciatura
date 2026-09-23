@@ -8,6 +8,7 @@ from typing import Any, Iterable, Optional
 from yt_dlp import YoutubeDL
 from youtube_transcript_api import YouTubeTranscriptApi
 
+from app.config import settings
 from app.utils import (
     build_channel_tab_url,
     build_video_url,
@@ -37,6 +38,8 @@ def _youtube_dl(options: Optional[dict[str, Any]] = None) -> YoutubeDL:
     }
     if options:
         base_options.update(options)
+    if settings.youtube_cookies_file:
+        base_options["cookiefile"] = settings.youtube_cookies_file
     return YoutubeDL(base_options)
 
 

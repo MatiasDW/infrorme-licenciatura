@@ -47,6 +47,12 @@ class CreateTranscriptRequest(BaseModel):
     url: HttpUrl
 
 
+class TranscriptQueueRequest(BaseModel):
+    video_ids: Optional[List[str]] = None
+    limit: int = Field(default=1000, ge=1, le=5000)
+    retry_blocked: bool = False
+
+
 class ChannelScrapeRequest(BaseModel):
     url: HttpUrl
     title_query: str = ""

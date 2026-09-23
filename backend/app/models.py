@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Date, DateTime, Integer, String, Text, func
+from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.database import Base
@@ -28,3 +28,17 @@ class YouTubeVideo(Base):
     transcript_error = Column(Text, nullable=True)
     raw_payload = Column(JSONB, nullable=True)
 
+
+class TranscriptJob(Base):
+    __tablename__ = "transcript_jobs"
+    __table_args__ = (UniqueConstraint("video_id", name="uq_transcript_jobs_video_id"),)
+
+    id = Column(Integer, primary_key=True)
+    video_id = Column(String(32), ForeignKey("youtube_videos.video_id", ondelete="CASCADE"), nullable=False)
+    status = Column(String(24), nullable=False, default="queued", index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    available_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    locked_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
