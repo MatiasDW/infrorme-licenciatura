@@ -194,10 +194,10 @@ export default function App() {
 
       <header className="site-header">
         <a className="brand-lockup" href="/" aria-label="Observatorio Municipal">
-          <span className="brand-mark"><i /><i /><i /></span>
+          <span className="municipality-logo" role="img" aria-label="Logo de la Municipalidad de Pudahuel" />
           <span>
-            <strong>Observatorio</strong>
-            <small>Municipal · Pudahuel</small>
+            <strong>Ilustre Municipalidad</strong>
+            <small>de Pudahuel · Observatorio público</small>
           </span>
         </a>
         <div className="header-status">

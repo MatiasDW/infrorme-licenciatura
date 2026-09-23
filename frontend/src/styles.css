@@ -69,6 +69,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .brand-lockup strong, .brand-lockup small { display: block; }
 .brand-lockup strong { font-size: 1rem; letter-spacing: -0.03em; }
 .brand-lockup small { margin-top: 2px; color: var(--muted); font: 500 0.63rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.municipality-logo { flex: 0 0 60px; width: 60px; height: 60px; border: 3px solid #fff; border-radius: 50%; background-color: #111; background-image: url("/pudahuel-channel.png"); background-position: left center; background-repeat: no-repeat; background-size: auto 70px; box-shadow: 0 8px 18px rgba(19, 43, 66, 0.18); }
 .brand-mark { display: grid; grid-template-columns: repeat(3, 5px); align-items: end; gap: 3px; width: 33px; height: 33px; padding: 8px; border-radius: 11px; background: var(--ink); box-shadow: 0 8px 16px rgba(19, 43, 66, 0.2); }
 .brand-mark i { display: block; border-radius: 2px 2px 0 0; background: var(--gold); }
 .brand-mark i:nth-child(1) { height: 10px; }.brand-mark i:nth-child(2) { height: 15px; }.brand-mark i:nth-child(3) { height: 8px; }
