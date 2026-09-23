@@ -20,6 +20,12 @@ def ensure_warehouse_schema(engine: Engine) -> None:
         connection.execute(text("CREATE SCHEMA IF NOT EXISTS warehouse"))
         connection.execute(
             text(
+                "CREATE INDEX IF NOT EXISTS youtube_videos_publish_date_idx "
+                "ON public.youtube_videos (publish_date DESC)"
+            )
+        )
+        connection.execute(
+            text(
                 """
                 CREATE TABLE IF NOT EXISTS warehouse.fact_transcript_segments (
                     video_id TEXT NOT NULL REFERENCES public.youtube_videos(video_id) ON DELETE CASCADE,
@@ -269,6 +275,44 @@ def search_warehouse_segments(
         {"video_id": video_id, "pattern": f"%{query}%", "max_results": max_results},
     ).mappings().all()
     return [dict(row) for row in fallback_rows]
+
+
+def search_archive_evidence(
+    db: Session,
+    query: str,
+    max_results: int = 8,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict[str, Any]]:
+    """Find compact evidence rows across all indexed reports."""
+    rows = db.execute(
+        text(
+            """
+            SELECT segment.video_id, video.title, video.publish_date,
+                   segment.segment_index AS index,
+                   segment.start_seconds AS start,
+                   segment.duration_seconds AS duration,
+                   segment.segment_text AS text
+            FROM warehouse.fact_transcript_segments AS segment
+            JOIN public.youtube_videos AS video ON video.video_id = segment.video_id
+            WHERE segment.search_vector @@ plainto_tsquery('simple', :query)
+              AND (CAST(:date_from AS date) IS NULL OR video.publish_date >= CAST(:date_from AS date))
+              AND (CAST(:date_to AS date) IS NULL OR video.publish_date <= CAST(:date_to AS date))
+            ORDER BY ts_rank(segment.search_vector, plainto_tsquery('simple', :query)) DESC,
+                     video.publish_date DESC NULLS LAST,
+                     segment.video_id,
+                     segment.segment_index
+            LIMIT :max_results
+            """
+        ),
+        {
+            "query": query,
+            "max_results": max(1, min(max_results, 20)),
+            "date_from": date_from,
+            "date_to": date_to,
+        },
+    ).mappings().all()
+    return [dict(row) for row in rows]
 
 
 def read_warehouse_segments(

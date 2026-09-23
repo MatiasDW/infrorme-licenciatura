@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.orm import Session
 
 from app.chat import answer_chat
@@ -131,6 +131,55 @@ def list_transcripts(db: Session = Depends(get_db)) -> TranscriptLibraryResponse
     return TranscriptLibraryResponse(
         recent=[to_summary(video) for video in recent],
         items=[to_summary(video) for video in items],
+        total=db.scalar(select(func.count(YouTubeVideo.video_id)).where(valid_filter)) or 0,
+    )
+
+
+@app.get("/api/reports", response_model=TranscriptLibraryResponse)
+def search_reports(
+    q: str = "",
+    date_from: date | None = None,
+    date_to: date | None = None,
+    limit: int = Query(default=1000, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> TranscriptLibraryResponse:
+    """Search the complete report catalog, including records pending transcript."""
+    statement = select(YouTubeVideo)
+    query = q.strip()
+    if query:
+        statement = statement.where(
+            text(
+                """
+                (
+                    youtube_videos.title ILIKE :topic_pattern
+                    OR COALESCE(youtube_videos.channel_name, '') ILIKE :topic_pattern
+                    OR EXISTS (
+                        SELECT 1
+                        FROM warehouse.fact_transcript_segments AS segment
+                        WHERE segment.video_id = youtube_videos.video_id
+                          AND segment.search_vector @@ plainto_tsquery('simple', :topic_query)
+                    )
+                )
+                """
+            )
+        ).params(topic_pattern=f"%{query}%", topic_query=query)
+    if date_from:
+        statement = statement.where(YouTubeVideo.publish_date >= date_from)
+    if date_to:
+        statement = statement.where(YouTubeVideo.publish_date <= date_to)
+
+    ordered = statement.order_by(
+        desc(YouTubeVideo.publish_date).nullslast(),
+        desc(YouTubeVideo.scraped_at),
+    )
+    total = db.scalar(select(func.count()).select_from(statement.order_by(None).subquery())) or 0
+    items = db.scalars(ordered.offset(offset).limit(limit)).all()
+
+    return TranscriptLibraryResponse(
+        recent=[to_summary(video) for video in items[:5]],
+        items=[to_summary(video) for video in items],
+        total=total,
     )
 
 
@@ -248,8 +297,8 @@ def scrape_all_channel(
 
 @app.post("/api/v1/chat/message", response_model=ChatResponse)
 async def chat_message(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
-    video = db.get(YouTubeVideo, payload.video_id)
-    if not video:
+    video = db.get(YouTubeVideo, payload.video_id) if payload.video_id else None
+    if payload.video_id and not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
     try:

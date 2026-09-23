@@ -8,15 +8,21 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import YouTubeVideo
-from app.warehouse import read_warehouse_segments, search_warehouse_segments, serialize_llm_context
+from app.warehouse import (
+    read_warehouse_segments,
+    search_archive_evidence,
+    search_warehouse_segments,
+    serialize_llm_context,
+)
 from app.youtube import search_transcript_segments
 
 
 SYSTEM_PROMPT = (
-    "You answer questions about a YouTube video transcript. "
-    "Use only the transcript and metadata provided by the system or tools. "
+    "You answer questions about a municipal archive of YouTube session transcripts. "
+    "Use only the transcript evidence and metadata provided by the system or tools. "
     "Tool results use the compact TOON format; read their tabular rows directly. "
-    "If the answer is not supported by the transcript, say so plainly."
+    "If there is no active report, search the archive before answering. "
+    "If the answer is not supported by the evidence, say so plainly and do not invent."
 )
 
 
@@ -59,6 +65,23 @@ def _tool_definitions() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "search_archive",
+                "description": "Search evidence across all indexed municipal reports by topic and optional date range.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Topic or question to find in the archive."},
+                        "date_from": {"type": "string", "description": "Optional start date in YYYY-MM-DD format."},
+                        "date_to": {"type": "string", "description": "Optional end date in YYYY-MM-DD format."},
+                        "max_results": {"type": "integer", "default": 8},
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "read_transcript_chunk",
                 "description": "Read a sequential slice of transcript segments by index.",
                 "parameters": {
@@ -92,14 +115,16 @@ def _tool_definitions() -> list[dict[str, Any]]:
 def _execute_tool(
     tool_name: str,
     arguments: dict[str, Any],
-    video: YouTubeVideo,
+    video: YouTubeVideo | None,
     db: Session,
 ) -> dict[str, Any]:
-    segments = video.transcript_segments or []
+    segments = video.transcript_segments if video else []
 
     if tool_name == "search_transcript":
         query = str(arguments.get("query", ""))
         max_results = max(1, min(int(arguments.get("max_results", 6)), 12))
+        if video is None:
+            return {"matches": search_archive_evidence(db, query, max_results)}
         matches = search_warehouse_segments(db, video.video_id, query, max_results)
         if not matches:
             matches = search_transcript_segments(segments, query=query, max_results=max_results)
@@ -107,7 +132,22 @@ def _execute_tool(
             "matches": matches,
         }
 
+    if tool_name == "search_archive":
+        query = str(arguments.get("query", ""))
+        max_results = max(1, min(int(arguments.get("max_results", 8)), 12))
+        return {
+            "evidence": search_archive_evidence(
+                db,
+                query,
+                max_results,
+                date_from=arguments.get("date_from") or None,
+                date_to=arguments.get("date_to") or None,
+            )
+        }
+
     if tool_name == "read_transcript_chunk":
+        if video is None:
+            return {"error": "No hay un reporte activo para leer por índice; usa search_archive."}
         start_index = max(0, int(arguments.get("start_index", 0)))
         limit = max(1, min(int(arguments.get("limit", 8)), 20))
         chunk = read_warehouse_segments(db, video.video_id, start_index, limit)
@@ -125,6 +165,11 @@ def _execute_tool(
         return {"segments": chunk}
 
     if tool_name == "get_video_metadata":
+        if video is None:
+            return {
+                "scope": "all_reports",
+                "description": "Consulta sobre todos los reportes municipales indexados.",
+            }
         return {
             "video_id": video.video_id,
             "title": video.title,
@@ -139,14 +184,14 @@ def _execute_tool(
 
 
 async def answer_chat(
-    video: YouTubeVideo,
+    video: YouTubeVideo | None,
     history: list[dict[str, str]],
     message: str,
     db: Session,
 ) -> tuple[str, bool]:
     if not settings.openrouter_api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not configured")
-    if not video.transcript_text:
+    if video is not None and not video.transcript_text:
         raise RuntimeError("This video does not have a saved transcript to chat against")
 
     messages: list[dict[str, Any]] = [
@@ -155,12 +200,19 @@ async def answer_chat(
             "role": "system",
             "content": serialize_llm_context(
                 {
-                    "video_id": video.video_id,
-                    "title": video.title,
-                    "channel_name": video.channel_name,
-                    "publish_date": video.publish_date.isoformat() if video.publish_date else None,
-                    "transcript_language": video.transcript_language,
-                    "segment_count": len(video.transcript_segments or []),
+                    "scope": "active_report" if video else "all_reports",
+                    "active_report": (
+                        {
+                            "video_id": video.video_id,
+                            "title": video.title,
+                            "channel_name": video.channel_name,
+                            "publish_date": video.publish_date.isoformat() if video.publish_date else None,
+                            "transcript_language": video.transcript_language,
+                            "segment_count": len(video.transcript_segments or []),
+                        }
+                        if video
+                        else None
+                    ),
                 }
             ),
         },

@@ -57,6 +57,7 @@ docker compose up --build -d
 
 - `GET /api/health`
 - `GET /api/transcripts`
+- `GET /api/reports?q=&date_from=&date_to=`
 - `GET /api/transcripts/{video_id}`
 - `POST /api/transcripts`
 - `POST /api/channels/scrape`
@@ -109,7 +110,7 @@ Chat:
 
 ```json
 {
-  "video_id": "xxxxxxxxxxx",
+  "video_id": null,
   "message": "¿Qué se dijo sobre presupuesto?",
   "history": [
     {
@@ -120,6 +121,10 @@ Chat:
 }
 ```
 
+`video_id` es opcional. Con `null`, el asistente busca evidencia en todo el archivo; con un ID,
+queda acotado a una sesión. El catálogo `/api/reports` incluye también registros pendientes de
+transcript y permite filtrar por tema, título, canal y rango de fechas.
+
 ## Comportamiento implementado
 
 - El scrapeo de canal combina `videos` y `streams`
@@ -129,10 +134,10 @@ Chat:
 - Cada resultado se persiste inmediatamente en PostgreSQL, incluyendo los videos sin transcript
 - Los videos que ya tienen transcript válido se reutilizan; usa `refresh_existing: true` para forzar su actualización
 - El warehouse separa segmentos y chunks derivados en tablas particionadas por `video_id`
-- El chat consulta el warehouse y serializa metadata/evidencia a TOON antes de enviarla al LLM
-- El historial principal excluye videos sin transcript real
+- El chat global consulta el warehouse completo y el chat de sesión puede acotar la búsqueda a un video
+- El historial principal conserva el catálogo completo, incluidos videos sin transcript real
 - Si el scrapeo del canal encuentra transcripts válidos, el frontend carga automáticamente el primero
-- El chat envía `video_id`, `message` y `history` al backend
+- El chat envía `video_id` opcional, `message` y `history` al backend
 - El backend puede ejecutar tools locales sobre el transcript antes de responder
 
 ## Warehouse y contexto LLM
@@ -141,6 +146,10 @@ La tabla `youtube_videos` conserva el registro raw y operacional. Al iniciar el 
 schema `warehouse` con `fact_transcript_segments` y `fact_transcript_chunks`, ambas distribuidas
 en 16 particiones hash por `video_id`. Los chunks tienen un tamaño aproximado de 3.200 caracteres
 para entregar evidencia acotada al chat sin cargar el transcript completo.
+
+Las búsquedas por video pueden podar particiones por `video_id`; las búsquedas globales usan los
+índices GIN de texto completo y devuelven solo las filas de evidencia relevantes, aplicando las
+fechas sobre `youtube_videos` antes de construir el contexto.
 
 Los resultados de las tools del chat se serializan con
 [`toon_format`](https://github.com/toon-format/toon-python), un formato compacto para estructuras

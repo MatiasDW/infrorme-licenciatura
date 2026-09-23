@@ -40,6 +40,7 @@ class VideoDetail(VideoSummary):
 class TranscriptLibraryResponse(BaseModel):
     recent: List[VideoSummary]
     items: List[VideoSummary]
+    total: int = 0
 
 
 class CreateTranscriptRequest(BaseModel):
@@ -92,13 +93,13 @@ class ChatMessageIn(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    video_id: str
+    video_id: Optional[str] = None
     message: str = Field(min_length=1)
     history: List[ChatMessageIn] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
-    video_id: str
+    video_id: Optional[str] = None
     answer: str
     used_tools: bool
     model: str

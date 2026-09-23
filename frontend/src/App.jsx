@@ -37,22 +37,29 @@ function getReportStatus(video) {
 }
 
 export default function App() {
-  const [singleUrl, setSingleUrl] = useState("");
+  const [reportSearch, setReportSearch] = useState({ query: "", date_from: "", date_to: "" });
   const [channelForm, setChannelForm] = useState(initialChannelForm);
-  const [library, setLibrary] = useState({ recent: [], items: [] });
+  const [library, setLibrary] = useState({ recent: [], items: [], total: 0 });
   const [currentVideo, setCurrentVideo] = useState(null);
   const [channelResult, setChannelResult] = useState(null);
   const [pageError, setPageError] = useState("");
-  const [loadingSingle, setLoadingSingle] = useState(false);
+  const [loadingSearch, setLoadingSearch] = useState(false);
   const [loadingChannel, setLoadingChannel] = useState(false);
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [chatOpen, setChatOpen] = useState(true);
+  const [chatScope, setChatScope] = useState("archive");
   const [chatHistory, setChatHistory] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
 
   const currentVideoId = currentVideo?.video_id || "";
+  const chatVideoId = chatScope === "report" ? currentVideoId : "";
   const currentStatus = getReportStatus(currentVideo);
+
+  function switchChatScope(scope) {
+    setChatScope(scope);
+    setChatHistory([]);
+  }
 
   async function request(path, options = {}) {
     const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -73,8 +80,12 @@ export default function App() {
     return response.json();
   }
 
-  async function loadLibrary() {
-    const data = await request("/api/transcripts");
+  async function loadLibrary(filters = {}) {
+    const params = new URLSearchParams({ limit: "1000" });
+    if (filters.query?.trim()) params.set("q", filters.query.trim());
+    if (filters.date_from) params.set("date_from", filters.date_from);
+    if (filters.date_to) params.set("date_to", filters.date_to);
+    const data = await request(`/api/reports?${params.toString()}`);
     setLibrary(data);
     return data;
   }
@@ -86,7 +97,6 @@ export default function App() {
     try {
       const data = await request(`/api/transcripts/${videoId}`);
       setCurrentVideo(data);
-      setSingleUrl(data.url || "");
       setChatHistory([]);
     } catch (error) {
       setPageError(error.message);
@@ -99,7 +109,8 @@ export default function App() {
     async function bootstrap() {
       try {
         const data = await loadLibrary();
-        if (data.recent[0]?.video_id) await loadTranscript(data.recent[0].video_id);
+        const firstUsable = data.items.find((video) => video.has_transcript) || data.items[0];
+        if (firstUsable?.video_id) await loadTranscript(firstUsable.video_id);
       } catch (error) {
         setPageError(error.message);
       }
@@ -107,22 +118,23 @@ export default function App() {
     bootstrap();
   }, []);
 
-  async function handleSingleSubmit(event) {
+  async function handleReportSearch(event) {
     event.preventDefault();
-    setLoadingSingle(true);
+    setLoadingSearch(true);
     setPageError("");
     try {
-      const video = await request("/api/transcripts", {
-        method: "POST",
-        body: JSON.stringify({ url: singleUrl }),
-      });
-      setCurrentVideo(video);
-      setChatHistory([]);
-      await loadLibrary();
+      const data = await loadLibrary(reportSearch);
+      const firstUsable = data.items.find((video) => video.has_transcript) || data.items[0];
+      if (firstUsable?.video_id) {
+        await loadTranscript(firstUsable.video_id);
+      } else {
+        setCurrentVideo(null);
+        setPageError("No hay reportes que coincidan con esos filtros.");
+      }
     } catch (error) {
       setPageError(error.message);
     } finally {
-      setLoadingSingle(false);
+      setLoadingSearch(false);
     }
   }
 
@@ -153,7 +165,7 @@ export default function App() {
 
   async function handleChatSubmit(event) {
     event.preventDefault();
-    if (!chatInput.trim() || !currentVideoId || chatLoading) return;
+    if (!chatInput.trim() || chatLoading) return;
 
     const nextMessage = chatInput.trim();
     setChatHistory((history) => [...history, { role: "user", content: nextMessage }]);
@@ -164,7 +176,7 @@ export default function App() {
       const data = await request("/api/v1/chat/message", {
         method: "POST",
         body: JSON.stringify({
-          video_id: currentVideoId,
+          video_id: chatVideoId || null,
           message: nextMessage,
           history: chatHistory,
         }),
@@ -226,29 +238,32 @@ export default function App() {
             </div>
           </div>
 
-          <form className="single-ingest" onSubmit={handleSingleSubmit}>
+          <form className="single-ingest" onSubmit={handleReportSearch}>
             <div className="form-heading">
-              <span className="form-icon">↗</span>
+              <span className="form-icon">⌕</span>
               <div>
-                <span className="section-label">Nuevo reporte</span>
-                <h2>Analizar una sesión</h2>
+                <span className="section-label">Archivo completo</span>
+                <h2>Buscar reportes</h2>
               </div>
             </div>
             <label>
-              URL de la fuente audiovisual
+              Tema, palabra o comisión
               <input
-                value={singleUrl}
-                onChange={(event) => setSingleUrl(event.target.value)}
-                placeholder="https://www.youtube.com/watch?v=..."
-                required
-                type="url"
+                value={reportSearch.query}
+                onChange={(event) => setReportSearch((state) => ({ ...state, query: event.target.value }))}
+                placeholder="presupuesto, seguridad, comisión..."
+                type="search"
               />
             </label>
-            <button className="primary-button" disabled={loadingSingle} type="submit">
-              {loadingSingle ? "Procesando evidencia..." : "Generar reporte"}
+            <div className="search-date-row">
+              <label>Desde<input type="date" value={reportSearch.date_from} onChange={(event) => setReportSearch((state) => ({ ...state, date_from: event.target.value }))} /></label>
+              <label>Hasta<input type="date" value={reportSearch.date_to} onChange={(event) => setReportSearch((state) => ({ ...state, date_to: event.target.value }))} /></label>
+            </div>
+            <button className="primary-button" disabled={loadingSearch} type="submit">
+              {loadingSearch ? "Buscando en el archivo..." : "Buscar en el archivo"}
               <span>↗</span>
             </button>
-            <p className="form-footnote">Se guarda metadata, transcript y segmentos temporales.</p>
+            <p className="form-footnote">{library.total || 0} reportes indexados · no necesitas pegar una URL para consultar.</p>
           </form>
 
           <div className="hero-footer">
@@ -464,12 +479,16 @@ export default function App() {
             <div className="chat-header">
               <div className="chat-identity">
                 <span className="assistant-avatar assistant-avatar-large" role="img" aria-label="Logo de la Municipalidad de Pudahuel" />
-                <div><span className="section-label">Asistente documental</span><h3>{currentVideo?.title || "Sin reporte activo"}</h3></div>
+                <div><span className="section-label">Asistente documental</span><h3>{chatScope === "archive" ? "Todo el archivo municipal" : currentVideo?.title || "Sin reporte activo"}</h3></div>
               </div>
               <span className="assistant-badge">AI</span>
             </div>
+            <div className="chat-scope-toggle" aria-label="Alcance del asistente">
+              <button className={chatScope === "archive" ? "active" : ""} onClick={() => switchChatScope("archive")} type="button">Todo el archivo</button>
+              <button className={chatScope === "report" ? "active" : ""} disabled={!currentVideoId} onClick={() => switchChatScope("report")} type="button">Esta sesión</button>
+            </div>
             <div className="chat-messages">
-              {chatHistory.length === 0 && <p className="chat-empty">Pregunta por decisiones, temas o momentos de esta sesión. Responderé usando solo la evidencia almacenada.</p>}
+              {chatHistory.length === 0 && <p className="chat-empty">{chatScope === "archive" ? "Pregunta por decisiones, temas o fechas en todo el archivo municipal." : "Pregunta por decisiones, temas o momentos de esta sesión."} Responderé usando solo la evidencia almacenada.</p>}
               {chatHistory.map((item, index) => (
                 <article className={`chat-bubble ${item.role}`} key={`${item.role}-${index}`}>
                   <span>{item.role === "user" ? "Tú" : "Asistente"}</span><p>{item.content}</p>
@@ -477,8 +496,8 @@ export default function App() {
               ))}
             </div>
             <form className="chat-form" onSubmit={handleChatSubmit}>
-              <textarea disabled={!currentVideoId || chatLoading} maxLength="2000" onChange={(event) => setChatInput(event.target.value)} placeholder="¿Qué se discutió en la sesión?" rows="3" value={chatInput} />
-              <button className="primary-button" disabled={!currentVideoId || chatLoading || !chatInput.trim()} type="submit">{chatLoading ? "Consultando..." : "Preguntar ↗"}</button>
+              <textarea disabled={chatLoading} maxLength="2000" onChange={(event) => setChatInput(event.target.value)} placeholder="¿Qué se discutió en las sesiones?" rows="3" value={chatInput} />
+              <button className="primary-button" disabled={chatLoading || !chatInput.trim()} type="submit">{chatLoading ? "Consultando..." : "Preguntar ↗"}</button>
             </form>
           </div>
         )}
