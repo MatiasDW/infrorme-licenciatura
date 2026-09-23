@@ -5,6 +5,7 @@ Plataforma web para transcripción y consulta de videos públicos de YouTube con
 - Backend en `FastAPI`
 - Frontend en `React + Vite`
 - Persistencia en `PostgreSQL`
+- Warehouse derivado en PostgreSQL con particiones hash para segmentos y chunks
 - Chat LLM sobre transcript vía `OpenRouter`
 - Procesamiento de video individual y scrapeo masivo de canal
 
@@ -127,10 +128,24 @@ Chat:
 - La deduplicación se hace por `video_id`
 - Cada resultado se persiste inmediatamente en PostgreSQL, incluyendo los videos sin transcript
 - Los videos que ya tienen transcript válido se reutilizan; usa `refresh_existing: true` para forzar su actualización
+- El warehouse separa segmentos y chunks derivados en tablas particionadas por `video_id`
+- El chat consulta el warehouse y serializa metadata/evidencia a TOON antes de enviarla al LLM
 - El historial principal excluye videos sin transcript real
 - Si el scrapeo del canal encuentra transcripts válidos, el frontend carga automáticamente el primero
 - El chat envía `video_id`, `message` y `history` al backend
 - El backend puede ejecutar tools locales sobre el transcript antes de responder
+
+## Warehouse y contexto LLM
+
+La tabla `youtube_videos` conserva el registro raw y operacional. Al iniciar el API se crea el
+schema `warehouse` con `fact_transcript_segments` y `fact_transcript_chunks`, ambas distribuidas
+en 16 particiones hash por `video_id`. Los chunks tienen un tamaño aproximado de 3.200 caracteres
+para entregar evidencia acotada al chat sin cargar el transcript completo.
+
+Los resultados de las tools del chat se serializan con
+[`toon_format`](https://github.com/toon-format/toon-python), un formato compacto para estructuras
+tabulares orientadas a LLM. TOON se usa como transporte de contexto, no como fuente canónica: la
+fuente de verdad continúa siendo PostgreSQL y se puede regenerar el warehouse.
 
 ## Desarrollo frontend local
 

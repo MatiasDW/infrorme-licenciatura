@@ -4,15 +4,18 @@ import json
 from typing import Any
 
 import httpx
+from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import YouTubeVideo
+from app.warehouse import read_warehouse_segments, search_warehouse_segments, serialize_llm_context
 from app.youtube import search_transcript_segments
 
 
 SYSTEM_PROMPT = (
     "You answer questions about a YouTube video transcript. "
     "Use only the transcript and metadata provided by the system or tools. "
+    "Tool results use the compact TOON format; read their tabular rows directly. "
     "If the answer is not supported by the transcript, say so plainly."
 )
 
@@ -86,31 +89,39 @@ def _tool_definitions() -> list[dict[str, Any]]:
     ]
 
 
-def _execute_tool(tool_name: str, arguments: dict[str, Any], video: YouTubeVideo) -> dict[str, Any]:
+def _execute_tool(
+    tool_name: str,
+    arguments: dict[str, Any],
+    video: YouTubeVideo,
+    db: Session,
+) -> dict[str, Any]:
     segments = video.transcript_segments or []
 
     if tool_name == "search_transcript":
+        query = str(arguments.get("query", ""))
+        max_results = max(1, min(int(arguments.get("max_results", 6)), 12))
+        matches = search_warehouse_segments(db, video.video_id, query, max_results)
+        if not matches:
+            matches = search_transcript_segments(segments, query=query, max_results=max_results)
         return {
-            "matches": search_transcript_segments(
-                segments,
-                query=str(arguments.get("query", "")),
-                max_results=max(1, min(int(arguments.get("max_results", 6)), 12)),
-            )
+            "matches": matches,
         }
 
     if tool_name == "read_transcript_chunk":
         start_index = max(0, int(arguments.get("start_index", 0)))
         limit = max(1, min(int(arguments.get("limit", 8)), 20))
-        chunk = []
-        for index, segment in enumerate(segments[start_index : start_index + limit], start=start_index):
-            chunk.append(
-                {
-                    "index": index,
-                    "start": segment.get("start"),
-                    "duration": segment.get("duration"),
-                    "text": segment.get("text"),
-                }
-            )
+        chunk = read_warehouse_segments(db, video.video_id, start_index, limit)
+        if not chunk:
+            chunk = []
+            for index, segment in enumerate(segments[start_index : start_index + limit], start=start_index):
+                chunk.append(
+                    {
+                        "index": index,
+                        "start": segment.get("start"),
+                        "duration": segment.get("duration"),
+                        "text": segment.get("text"),
+                    }
+                )
         return {"segments": chunk}
 
     if tool_name == "get_video_metadata":
@@ -127,7 +138,12 @@ def _execute_tool(tool_name: str, arguments: dict[str, Any], video: YouTubeVideo
     return {"error": f"Unknown tool: {tool_name}"}
 
 
-async def answer_chat(video: YouTubeVideo, history: list[dict[str, str]], message: str) -> tuple[str, bool]:
+async def answer_chat(
+    video: YouTubeVideo,
+    history: list[dict[str, str]],
+    message: str,
+    db: Session,
+) -> tuple[str, bool]:
     if not settings.openrouter_api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not configured")
     if not video.transcript_text:
@@ -137,7 +153,7 @@ async def answer_chat(video: YouTubeVideo, history: list[dict[str, str]], messag
         {"role": "system", "content": SYSTEM_PROMPT},
         {
             "role": "system",
-            "content": json.dumps(
+            "content": serialize_llm_context(
                 {
                     "video_id": video.video_id,
                     "title": video.title,
@@ -145,9 +161,7 @@ async def answer_chat(video: YouTubeVideo, history: list[dict[str, str]], messag
                     "publish_date": video.publish_date.isoformat() if video.publish_date else None,
                     "transcript_language": video.transcript_language,
                     "segment_count": len(video.transcript_segments or []),
-                    "transcript_excerpt": (video.transcript_text or "")[:4000],
-                },
-                ensure_ascii=False,
+                }
             ),
         },
     ]
@@ -199,13 +213,13 @@ async def answer_chat(video: YouTubeVideo, history: list[dict[str, str]], messag
         for tool_call in tool_calls:
             function_name = tool_call["function"]["name"]
             arguments = json.loads(tool_call["function"].get("arguments") or "{}")
-            result = _execute_tool(function_name, arguments, video)
+            result = _execute_tool(function_name, arguments, video, db)
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tool_call["id"],
                     "name": function_name,
-                    "content": json.dumps(result, ensure_ascii=False),
+                    "content": serialize_llm_context(result),
                 }
             )
 
@@ -222,4 +236,3 @@ async def answer_chat(video: YouTubeVideo, history: list[dict[str, str]], messag
         second_data = second_response.json()
         final_message = second_data["choices"][0]["message"]
         return _serialize_content(final_message.get("content", "")), True
-

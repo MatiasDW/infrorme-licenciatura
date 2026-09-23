@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.chat import answer_chat
 from app.config import settings
-from app.database import Base, engine, get_db
+from app.database import Base, SessionLocal, engine, get_db
 from app.models import YouTubeVideo
 from app.schemas import (
     ChannelScrapeRequest,
@@ -26,6 +26,7 @@ from app.schemas import (
     VideoSummary,
 )
 from app.youtube import build_channel_video_payload, build_video_payload, discover_channel_matches
+from app.warehouse import backfill_warehouse, ensure_warehouse_schema, sync_video_to_warehouse
 
 
 app = FastAPI(title="YouTube Transcript Console", version="1.0.0")
@@ -51,6 +52,8 @@ def persist_video(db: Session, payload: dict) -> YouTubeVideo:
     video.scraped_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(video)
+    sync_video_to_warehouse(db, video)
+    db.commit()
     return video
 
 
@@ -91,6 +94,9 @@ def to_detail(video: YouTubeVideo) -> VideoDetail:
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
+    ensure_warehouse_schema(engine)
+    with SessionLocal() as db:
+        backfill_warehouse(db)
 
 
 @app.get("/api/health")
@@ -250,6 +256,7 @@ async def chat_message(payload: ChatRequest, db: Session = Depends(get_db)) -> C
             video=video,
             history=[item.model_dump() for item in payload.history],
             message=payload.message,
+            db=db,
         )
     except httpx.HTTPStatusError as exc:  # type: ignore[name-defined]
         detail = exc.response.text if exc.response is not None else str(exc)

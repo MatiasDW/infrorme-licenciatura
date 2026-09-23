@@ -9,19 +9,31 @@ const initialChannelForm = {
   all_content: false,
 };
 
-function formatDate(value) {
+function formatDate(value, options = { dateStyle: "medium" }) {
   if (!value) return "Sin fecha";
-  return new Intl.DateTimeFormat("es-CL", {
-    dateStyle: "long",
-  }).format(new Date(value));
+  return new Intl.DateTimeFormat("es-CL", options).format(new Date(value));
 }
 
 function formatDateTime(value) {
-  if (!value) return "";
+  if (!value) return "Sin registro";
   return new Intl.DateTimeFormat("es-CL", {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function getReportType(title = "") {
+  const normalized = title.toLowerCase();
+  if (normalized.includes("comision")) return "Comisión";
+  if (normalized.includes("extraordinaria")) return "Sesión extraordinaria";
+  if (normalized.includes("reunion")) return "Reunión de concejo";
+  return "Sesión ordinaria";
+}
+
+function getReportStatus(video) {
+  if (!video) return { label: "Sin selección", tone: "quiet" };
+  if (video.has_transcript) return { label: "Evidencia disponible", tone: "ready" };
+  return { label: "Pendiente de transcript", tone: "pending" };
 }
 
 export default function App() {
@@ -40,17 +52,16 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState(false);
 
   const currentVideoId = currentVideo?.video_id || "";
+  const currentStatus = getReportStatus(currentVideo);
 
   async function request(path, options = {}) {
     const response = await fetch(`${API_BASE_URL}${path}`, {
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       ...options,
     });
 
     if (!response.ok) {
-      let detail = "Request failed";
+      let detail = "No fue posible completar la solicitud";
       try {
         const data = await response.json();
         detail = data.detail || detail;
@@ -59,7 +70,6 @@ export default function App() {
       }
       throw new Error(detail);
     }
-
     return response.json();
   }
 
@@ -76,6 +86,7 @@ export default function App() {
     try {
       const data = await request(`/api/transcripts/${videoId}`);
       setCurrentVideo(data);
+      setSingleUrl(data.url || "");
       setChatHistory([]);
     } catch (error) {
       setPageError(error.message);
@@ -86,17 +97,13 @@ export default function App() {
 
   useEffect(() => {
     async function bootstrap() {
-      setPageError("");
       try {
         const data = await loadLibrary();
-        if (data.recent[0]?.video_id) {
-          await loadTranscript(data.recent[0].video_id);
-        }
+        if (data.recent[0]?.video_id) await loadTranscript(data.recent[0].video_id);
       } catch (error) {
         setPageError(error.message);
       }
     }
-
     bootstrap();
   }, []);
 
@@ -111,7 +118,6 @@ export default function App() {
       });
       setCurrentVideo(video);
       setChatHistory([]);
-      setSingleUrl("");
       await loadLibrary();
     } catch (error) {
       setPageError(error.message);
@@ -137,9 +143,7 @@ export default function App() {
       });
       setChannelResult(result);
       await loadLibrary();
-      if (result.first_valid_video_id) {
-        await loadTranscript(result.first_valid_video_id);
-      }
+      if (result.first_valid_video_id) await loadTranscript(result.first_valid_video_id);
     } catch (error) {
       setPageError(error.message);
     } finally {
@@ -151,9 +155,8 @@ export default function App() {
     event.preventDefault();
     if (!chatInput.trim() || !currentVideoId || chatLoading) return;
 
-    const nextHistory = [...chatHistory, { role: "user", content: chatInput.trim() }];
     const nextMessage = chatInput.trim();
-    setChatHistory(nextHistory);
+    setChatHistory((history) => [...history, { role: "user", content: nextMessage }]);
     setChatInput("");
     setChatLoading(true);
 
@@ -170,7 +173,7 @@ export default function App() {
     } catch (error) {
       setChatHistory((history) => [
         ...history,
-        { role: "assistant", content: `Error: ${error.message}` },
+        { role: "assistant", content: `No se pudo consultar: ${error.message}` },
       ]);
     } finally {
       setChatLoading(false);
@@ -178,72 +181,61 @@ export default function App() {
   }
 
   const historyOptions = library.items || [];
+  const visibleChannelVideos = channelResult?.videos?.slice(0, 60) || [];
 
   return (
     <div className="app-shell">
-      <div className="page-backdrop" />
-      <header className="page-header">
-        <div>
-          <p className="eyebrow">Transcripción y consulta de videos públicos</p>
-          <h1>YouTube Transcript Console</h1>
-          <p className="header-copy">
-            Carga videos o canales de YouTube, guarda transcripts en PostgreSQL y consulta
-            el contenido con chat sobre el material procesado.
-          </p>
+      <div className="page-backdrop" aria-hidden="true">
+        <span className="backdrop-column column-one" />
+        <span className="backdrop-column column-two" />
+        <span className="backdrop-document document-one" />
+        <span className="backdrop-document document-two" />
+      </div>
+
+      <header className="site-header">
+        <a className="brand-lockup" href="/" aria-label="Observatorio Municipal">
+          <span className="brand-mark"><i /><i /><i /></span>
+          <span>
+            <strong>Observatorio</strong>
+            <small>Municipal · Pudahuel</small>
+          </span>
+        </a>
+        <div className="header-status">
+          <span className="status-dot" />
+          <span>Archivo público conectado</span>
+          <b>v0.1</b>
         </div>
       </header>
 
       <main className="page-grid">
         <section className="hero-card">
           <div className="hero-copy">
-            <p className="section-label">Flujo principal</p>
-            <h2>Procesamiento individual o por canal con historial reutilizable.</h2>
-            <p>
-              Un segmento es un bloque de texto asociado a un tiempo de inicio y duración.
-              La vista actual muestra esos bloques para facilitar lectura, trazabilidad y
-              consulta puntual.
-            </p>
-          </div>
-
-          <div className="history-panel">
-            <p className="section-label">Historial</p>
-            <div className="recent-buttons">
-              {library.recent.map((video) => (
-                <button
-                  key={video.video_id}
-                  className="history-chip"
-                  onClick={() => loadTranscript(video.video_id)}
-                  type="button"
-                >
-                  {video.title}
-                </button>
-              ))}
-              {library.recent.length === 0 && <span className="muted">Sin transcripts guardados.</span>}
+            <div className="hero-kicker">
+              <span className="section-label">Inteligencia de sesiones</span>
+              <span className="hero-index">01 / INGESTA</span>
             </div>
-
-            <label className="dropdown-label">
-              Transcripts anteriores
-              <select
-                value={currentVideoId}
-                onChange={(event) => loadTranscript(event.target.value)}
-              >
-                <option value="">Seleccionar transcript</option>
-                {historyOptions.map((video) => (
-                  <option key={video.video_id} value={video.video_id}>
-                    {video.title}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <h1>De la sesión municipal al reporte que se puede consultar.</h1>
+            <p>
+              Reúne videos públicos, conserva su evidencia temporal y encuentra decisiones,
+              compromisos y temas relevantes sin perder la fuente original.
+            </p>
+            <div className="hero-notes">
+              <span><b>01</b> Fuente verificable</span>
+              <span><b>02</b> Transcript indexado</span>
+              <span><b>03</b> Consulta asistida</span>
+            </div>
           </div>
-        </section>
 
-        <section className="forms-grid">
-          <form className="panel" onSubmit={handleSingleSubmit}>
-            <p className="section-label">Video individual</p>
-            <h3>Extraer metadata y transcript</h3>
+          <form className="single-ingest" onSubmit={handleSingleSubmit}>
+            <div className="form-heading">
+              <span className="form-icon">↗</span>
+              <div>
+                <span className="section-label">Nuevo reporte</span>
+                <h2>Analizar una sesión</h2>
+              </div>
+            </div>
             <label>
-              URL de YouTube
+              URL de la fuente audiovisual
               <input
                 value={singleUrl}
                 onChange={(event) => setSingleUrl(event.target.value)}
@@ -253,229 +245,236 @@ export default function App() {
               />
             </label>
             <button className="primary-button" disabled={loadingSingle} type="submit">
-              {loadingSingle ? "Procesando..." : "Cargar video"}
+              {loadingSingle ? "Procesando evidencia..." : "Generar reporte"}
+              <span>↗</span>
             </button>
+            <p className="form-footnote">Se guarda metadata, transcript y segmentos temporales.</p>
           </form>
 
-          <form className="panel" onSubmit={handleChannelSubmit}>
-            <p className="section-label">Canal</p>
-            <h3>Buscar en pestañas videos y streams</h3>
+          <div className="hero-footer">
+            <span><i className="signal-icon" /> PostgreSQL conectado</span>
+            <span>Última actualización: {formatDateTime(currentVideo?.scraped_at)}</span>
+          </div>
+        </section>
+
+        <section className="intake-grid">
+          <form className="panel channel-panel" onSubmit={handleChannelSubmit}>
+            <div className="panel-heading">
+              <div>
+                <span className="section-label">Carga de archivo</span>
+                <h2>Explorar el canal municipal</h2>
+              </div>
+              <span className="panel-number">02</span>
+            </div>
+            <p className="panel-intro">
+              Descubre sesiones y comisiones, y deja cada registro listo para consulta posterior.
+            </p>
             <label>
-              URL de canal
+              URL del canal
               <input
                 value={channelForm.url}
-                onChange={(event) =>
-                  setChannelForm((state) => ({ ...state, url: event.target.value }))
-                }
+                onChange={(event) => setChannelForm((state) => ({ ...state, url: event.target.value }))}
                 required
                 type="url"
               />
             </label>
-            <label>
-              Filtro por título (separa términos con `|`)
+            <div className="form-row">
+              <label>
+                Términos de búsqueda
                 <input
                   value={channelForm.title_query}
                   onChange={(event) =>
                     setChannelForm((state) => ({ ...state, title_query: event.target.value }))
                   }
+                  placeholder="concejo|sesion|comision"
                   type="text"
                 />
               </label>
-              <label className="checkbox-label">
-                <input
-                  checked={channelForm.all_content}
-                  onChange={(event) =>
-                    setChannelForm((state) => ({
-                      ...state,
-                      all_content: event.target.checked,
-                      title_query: event.target.checked ? "" : state.title_query,
-                      max_videos: event.target.checked ? 5000 : state.max_videos,
-                    }))
-                  }
-                  type="checkbox"
-                />
-                <span>Incluir todo el contenido del canal, aunque no mencione al concejo</span>
-              </label>
               <label>
-                Máximo de videos
+                Máximo de registros
                 <input
                   min="1"
                   max="5000"
-                value={channelForm.max_videos}
+                  value={channelForm.max_videos}
+                  onChange={(event) =>
+                    setChannelForm((state) => ({ ...state, max_videos: event.target.value }))
+                  }
+                  required
+                  type="number"
+                />
+              </label>
+            </div>
+            <label className="checkbox-label">
+              <input
+                checked={channelForm.all_content}
                 onChange={(event) =>
-                  setChannelForm((state) => ({ ...state, max_videos: event.target.value }))
+                  setChannelForm((state) => ({
+                    ...state,
+                    all_content: event.target.checked,
+                    title_query: event.target.checked ? "" : state.title_query,
+                  }))
                 }
-                required
-                type="number"
+                type="checkbox"
               />
+              <span>Incluir todo el archivo, incluso piezas fuera del concejo</span>
             </label>
-            <button className="primary-button" disabled={loadingChannel} type="submit">
-              {loadingChannel ? "Scrapeando y guardando..." : "Scrapear y guardar"}
+            <button className="secondary-button" disabled={loadingChannel} type="submit">
+              {loadingChannel ? "Indexando archivo..." : "Indexar canal"}
+              <span>→</span>
             </button>
-            <p className="form-hint">
-              La carga masiva puede tardar varios minutos porque obtiene el transcript de cada
-              video y guarda también los que no tengan transcript.
-            </p>
           </form>
+
+          <section className="panel method-panel">
+            <div className="panel-heading">
+              <div>
+                <span className="section-label">Cómo trabaja</span>
+                <h2>Una ficha por sesión</h2>
+              </div>
+              <span className="panel-number">03</span>
+            </div>
+            <div className="method-list">
+              <div><span>01</span><p><b>Detectar</b> videos y transmisiones del canal.</p></div>
+              <div><span>02</span><p><b>Conservar</b> fuente, fecha y evidencia textual.</p></div>
+              <div><span>03</span><p><b>Consultar</b> por palabras o preguntas.</p></div>
+            </div>
+            <div className="method-stamp">ARCHIVO<br /><strong>ABIERTO</strong></div>
+          </section>
         </section>
 
         {pageError && <section className="error-banner">{pageError}</section>}
 
         {channelResult && (
           <section className="panel channel-results">
-            <p className="section-label">Resultado del canal</p>
-            <div className="stats-row">
+            <div className="panel-heading result-heading">
               <div>
-                <span>Filtro aplicado</span>
-                <strong>{channelResult.title_query}</strong>
+                <span className="section-label">Resultado de ingesta</span>
+                <h2>Archivo incorporado</h2>
               </div>
-              <div>
-                <span>Límite aplicado</span>
-                <strong>{channelResult.max_videos}</strong>
-              </div>
-              <div>
-                <span>Videos cargados</span>
-                <strong>{channelResult.processed_count}</strong>
-              </div>
-              <div>
-                <span>Con transcript</span>
-                <strong>{channelResult.videos_with_transcript}</strong>
-              </div>
-              <div>
-                <span>Sin transcript</span>
-                <strong>{channelResult.videos_without_transcript}</strong>
-              </div>
+              <span className="result-count">{channelResult.processed_count} registros</span>
             </div>
-
+            <div className="stats-row">
+              <div><span>Filtro</span><strong>{channelResult.title_query || "Todo el canal"}</strong></div>
+              <div><span>Con evidencia</span><strong className="green-number">{channelResult.videos_with_transcript}</strong></div>
+              <div><span>Pendientes</span><strong>{channelResult.videos_without_transcript}</strong></div>
+              <div><span>Fuente</span><strong>YouTube</strong></div>
+            </div>
             <div className="channel-list">
-              {channelResult.videos.map((video) => (
-                <article className="channel-item" key={video.video_id}>
-                  <div>
-                    <h4>{video.title}</h4>
-                    <p>
-                      {video.channel_name || "Canal sin nombre"} · {video.source_tab} ·{" "}
-                      {video.publish_date ? formatDate(video.publish_date) : "Sin fecha"}
-                    </p>
-                  </div>
-                  <span className={video.has_transcript ? "pill success" : "pill muted-pill"}>
-                    {video.has_transcript ? "Con transcript" : "Sin transcript"}
+              {visibleChannelVideos.map((video) => (
+                <button className="channel-item" key={video.video_id} onClick={() => loadTranscript(video.video_id)} type="button">
+                  <span className="item-marker">{video.has_transcript ? "✓" : "—"}</span>
+                  <span className="channel-item-copy">
+                    <b>{video.title}</b>
+                    <small>{video.source_tab} · {video.publish_date ? formatDate(video.publish_date) : "Fecha pendiente"}</small>
                   </span>
-                </article>
+                  <span className={video.has_transcript ? "pill success" : "pill muted-pill"}>
+                    {video.has_transcript ? "Listo" : "Pendiente"}
+                  </span>
+                </button>
               ))}
             </div>
+            {channelResult.videos.length > visibleChannelVideos.length && (
+              <p className="list-footnote">Mostrando 60 de {channelResult.videos.length} registros en esta vista.</p>
+            )}
           </section>
         )}
 
-        <section className="panel transcript-panel">
-          <div className="transcript-header">
-            <div>
-              <p className="section-label">Resultado actual</p>
-              <h2>{currentVideo?.title || "Aún no hay transcript cargado"}</h2>
-              {currentVideo && (
-                <p className="transcript-meta">
-                  {currentVideo.channel_name || "Canal desconocido"} ·{" "}
-                  {formatDate(currentVideo.publish_date)} · guardado {formatDateTime(currentVideo.scraped_at)}
-                </p>
-              )}
-            </div>
-            {loadingTranscript && <span className="muted">Cargando transcript...</span>}
-          </div>
-
-          {currentVideo ? (
-            <>
-              <div className="summary-grid">
-                <div className="summary-box">
-                  <span>Idioma</span>
-                  <strong>{currentVideo.transcript_language || "No detectado"}</strong>
-                </div>
-                <div className="summary-box">
-                  <span>Fuente</span>
-                  <strong>{currentVideo.transcript_source || "Sin transcript"}</strong>
-                </div>
-                <div className="summary-box">
-                  <span>Segmentos</span>
-                  <strong>{currentVideo.transcript_segments.length}</strong>
-                </div>
-                <div className="summary-box">
-                  <span>Generado</span>
-                  <strong>
-                    {currentVideo.transcript_is_generated == null
-                      ? "N/D"
-                      : currentVideo.transcript_is_generated
-                        ? "Sí"
-                        : "No"}
-                  </strong>
-                </div>
-              </div>
-
-              {currentVideo.transcript_error && (
-                <div className="warning-banner">
-                  El video fue guardado, pero no se pudo obtener transcript:{" "}
-                  {currentVideo.transcript_error}
-                </div>
-              )}
-
-              <div className="segments-list">
-                {(currentVideo.transcript_segments || []).map((segment, index) => (
-                  <article className="segment-card" key={`${segment.start}-${index}`}>
-                    <span className="timestamp">{segment.start.toFixed(1)}s</span>
-                    <p>{segment.text}</p>
-                  </article>
-                ))}
-                {currentVideo.transcript_segments.length === 0 && (
-                  <p className="muted">No hay transcript real guardado para este video.</p>
+        <section className="dashboard-grid">
+          <section className="panel report-panel">
+            <div className="report-header">
+              <div>
+                <div className="report-label"><span className="report-dot" /> Reporte activo · {getReportType(currentVideo?.title)}</div>
+                <h2>{currentVideo?.title || "Selecciona una sesión del archivo"}</h2>
+                {currentVideo && (
+                  <p className="report-meta">
+                    {currentVideo.channel_name || "Canal municipal"} · {formatDate(currentVideo.publish_date)} · guardado {formatDateTime(currentVideo.scraped_at)}
+                  </p>
                 )}
               </div>
-            </>
-          ) : (
-            <p className="muted">Carga un video o procesa un canal para ver resultados.</p>
-          )}
+              <span className={`report-status ${currentStatus.tone}`}>{currentStatus.label}</span>
+            </div>
+
+            {loadingTranscript ? (
+              <div className="empty-report loading-block"><span className="loader" /> Cargando ficha documental...</div>
+            ) : currentVideo ? (
+              <>
+                <div className="report-metrics">
+                  <div><span>Idioma</span><b>{currentVideo.transcript_language || "No detectado"}</b></div>
+                  <div><span>Segmentos</span><b>{currentVideo.transcript_segments?.length || 0}</b></div>
+                  <div><span>Fuente</span><b>{currentVideo.transcript_source || "Pendiente"}</b></div>
+                  <div><span>Generado</span><b>{currentVideo.transcript_is_generated == null ? "N/D" : currentVideo.transcript_is_generated ? "Sí" : "No"}</b></div>
+                </div>
+                {currentVideo.transcript_error && (
+                  <div className="warning-banner">
+                    <b>Registro conservado.</b> El transcript está pendiente: {currentVideo.transcript_error}
+                  </div>
+                )}
+                <div className="evidence-heading">
+                  <div><span className="section-label">Evidencia temporal</span><h3>Fragmentos del reporte</h3></div>
+                  {currentVideo.url && <a href={currentVideo.url} target="_blank" rel="noreferrer">Abrir fuente ↗</a>}
+                </div>
+                <div className="segments-list">
+                  {(currentVideo.transcript_segments || []).map((segment, index) => (
+                    <article className="segment-card" key={`${segment.start}-${index}`}>
+                      <span className="timestamp">{segment.start.toFixed(1)}s</span>
+                      <p>{segment.text}</p>
+                    </article>
+                  ))}
+                  {!currentVideo.transcript_segments?.length && <p className="muted">No hay evidencia textual disponible todavía.</p>}
+                </div>
+              </>
+            ) : (
+              <div className="empty-report"><span className="empty-seal">+</span><p>Carga una sesión para abrir su ficha de evidencia.</p></div>
+            )}
+          </section>
+
+          <aside className="panel archive-panel">
+            <div className="panel-heading">
+              <div><span className="section-label">Archivo reciente</span><h2>Sesiones guardadas</h2></div>
+              <span className="archive-total">{library.items.length}</span>
+            </div>
+            <div className="recent-list">
+              {library.recent.map((video, index) => (
+                <button className={`recent-item ${video.video_id === currentVideoId ? "active" : ""}`} key={video.video_id} onClick={() => loadTranscript(video.video_id)} type="button">
+                  <span className="recent-index">0{index + 1}</span>
+                  <span><b>{video.title}</b><small>{formatDate(video.publish_date)} · {video.has_transcript ? "Con evidencia" : "Pendiente"}</small></span>
+                  <span className="arrow">↗</span>
+                </button>
+              ))}
+              {!library.recent.length && <p className="muted">Aún no hay sesiones con transcript.</p>}
+            </div>
+            <label className="archive-select-label">
+              Ver todo el archivo
+              <select value={currentVideoId} onChange={(event) => loadTranscript(event.target.value)}>
+                <option value="">Seleccionar registro</option>
+                {historyOptions.map((video) => <option key={video.video_id} value={video.video_id}>{video.title}</option>)}
+              </select>
+            </label>
+            <div className="archive-footer"><span className="signal-icon" /> Datos almacenados en PostgreSQL</div>
+          </aside>
         </section>
       </main>
 
       <aside className={`chat-shell ${chatOpen ? "open" : "closed"}`}>
         <button className="chat-toggle" onClick={() => setChatOpen((open) => !open)} type="button">
-          {chatOpen ? "Cerrar chat" : "Abrir chat"}
+          <span className="chat-spark">✦</span>{chatOpen ? "Ocultar asistente" : "Consultar reporte"}
         </button>
-
         {chatOpen && (
           <div className="chat-panel">
             <div className="chat-header">
-              <div>
-                <p className="section-label">Chat LLM</p>
-                <h3>{currentVideo?.title || "Sin video activo"}</h3>
-              </div>
+              <div><span className="section-label">Asistente documental</span><h3>{currentVideo?.title || "Sin reporte activo"}</h3></div>
+              <span className="assistant-badge">AI</span>
             </div>
-
             <div className="chat-messages">
-              {chatHistory.length === 0 && (
-                <p className="muted">
-                  Haz preguntas sobre el transcript cargado. El historial vive solo en memoria.
-                </p>
-              )}
+              {chatHistory.length === 0 && <p className="chat-empty">Pregunta por decisiones, temas o momentos de esta sesión. Responderé usando solo la evidencia almacenada.</p>}
               {chatHistory.map((item, index) => (
                 <article className={`chat-bubble ${item.role}`} key={`${item.role}-${index}`}>
-                  <span>{item.role === "user" ? "Tú" : "Asistente"}</span>
-                  <p>{item.content}</p>
+                  <span>{item.role === "user" ? "Tú" : "Asistente"}</span><p>{item.content}</p>
                 </article>
               ))}
             </div>
-
             <form className="chat-form" onSubmit={handleChatSubmit}>
-              <textarea
-                disabled={!currentVideoId || chatLoading}
-                onChange={(event) => setChatInput(event.target.value)}
-                placeholder="Pregunta sobre el contenido del video..."
-                rows="3"
-                value={chatInput}
-              />
-              <button
-                className="primary-button"
-                disabled={!currentVideoId || chatLoading || !chatInput.trim()}
-                type="submit"
-              >
-                {chatLoading ? "Consultando..." : "Enviar"}
-              </button>
+              <textarea disabled={!currentVideoId || chatLoading} maxLength="2000" onChange={(event) => setChatInput(event.target.value)} placeholder="¿Qué se discutió en la sesión?" rows="3" value={chatInput} />
+              <button className="primary-button" disabled={!currentVideoId || chatLoading || !chatInput.trim()} type="submit">{chatLoading ? "Consultando..." : "Preguntar ↗"}</button>
             </form>
           </div>
         )}
