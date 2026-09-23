@@ -31,6 +31,8 @@ Dockerfile
 requirements.txt
 ```
 
+Inventario visual de referencia del canal: [`docs/pudahuel-channel-inventory-2026-09-23.md`](docs/pudahuel-channel-inventory-2026-09-23.md).
+
 ## Variables de entorno
 
 Copia `.env.example` a `.env` y define al menos:
