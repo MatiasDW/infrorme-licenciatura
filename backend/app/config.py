@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     youtube_block_cooldown_seconds: float = 21600.0
     youtube_max_attempts: int = 3
     youtube_cookies_file: str = ""
+    youtube_proxy_url: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",

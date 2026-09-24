@@ -40,6 +40,8 @@ def _youtube_dl(options: Optional[dict[str, Any]] = None) -> YoutubeDL:
         base_options.update(options)
     if settings.youtube_cookies_file:
         base_options["cookiefile"] = settings.youtube_cookies_file
+    if settings.youtube_proxy_url and "proxy" not in base_options:
+        base_options["proxy"] = settings.youtube_proxy_url
     return YoutubeDL(base_options)
 
 
@@ -256,7 +258,17 @@ def _fetch_video_metadata_via_html(video_url: str) -> dict[str, Any]:
 
 def fetch_transcript_payload(video_id: str) -> dict[str, Any]:
     try:
-        api = YouTubeTranscriptApi()
+        if settings.youtube_proxy_url:
+            from youtube_transcript_api.proxies import GenericProxyConfig
+
+            api = YouTubeTranscriptApi(
+                proxy_config=GenericProxyConfig(
+                    http_url=settings.youtube_proxy_url,
+                    https_url=settings.youtube_proxy_url,
+                )
+            )
+        else:
+            api = YouTubeTranscriptApi()
         if hasattr(api, "list"):
             transcript_list = api.list(video_id)
         elif hasattr(api, "list_transcripts"):

@@ -244,6 +244,11 @@ Las cookies pueden provocar el bloqueo de la cuenta; no uses una cuenta personal
 permanente hay que montar el mismo archivo como solo lectura y definir `YOUTUBE_COOKIES_FILE` en el
 servicio `worker`.
 
+Docker no cambia la IP pública de salida: el contenedor normalmente comparte la IP del host mediante
+NAT. Si tienes un proxy autorizado, puedes definir `YOUTUBE_PROXY_URL` en `.env`, por ejemplo
+`http://usuario:clave@proxy.example:puerto`; se aplicará al API y al worker. No uses proxies públicos
+gratuitos ni intentes evadir bloqueos con rotación agresiva de IPs.
+
 ## Build frontend
 
 ```bash
